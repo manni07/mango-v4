@@ -16,8 +16,8 @@ pub fn perp_prune_orders(ctx: Context<PerpPruneOrders>, limit: u8) -> Result<()>
     };
 
     book.cancel_all_orders(
-        account,
-        &ctx.accounts.account.key(),
+        &mut account.borrow_mut(),
+        ctx.accounts.account.as_ref().key,
         &mut perp_market,
         limit,
         None,
