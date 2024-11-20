@@ -1,4 +1,4 @@
-use crate::state::{BookSide, Group, PerpMarket};
+use crate::state::{BookSide, Group, MangoAccountFixed, PerpMarket};
 use anchor_lang::prelude::*;
 
 #[derive(Accounts)]

@@ -5,7 +5,7 @@ use crate::error::MangoError;
 use crate::state::*;
 
 pub fn perp_prune_orders(ctx: Context<PerpPruneOrders>, limit: u8) -> Result<()> {
-    let mut perp_market: PerpMarket = ctx.accounts.perp_market.load_mut()?;
+    let mut perp_market = ctx.accounts.perp_market.load_mut()?;
     // only allow pruning orders when market is in force-close
     require!(perp_market.is_force_close(), MangoError::SomeError);
 

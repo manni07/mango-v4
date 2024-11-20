@@ -2599,8 +2599,7 @@ impl TransactionBuilder {
     }
 
     pub fn append(&mut self, prepared_instructions: PreparedInstructions) {
-        self.instructions
-            .extend(prepared_instructions.instructions);
+        self.instructions.extend(prepared_instructions.instructions);
     }
 }
 
