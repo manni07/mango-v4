@@ -1320,6 +1320,12 @@ pub mod mango_v4 {
         Ok(())
     }
 
+    pub fn perp_prune_orders(ctx: Context<PerpPruneOrders>, limit: u8) -> Result<()> {
+        #[cfg(feature = "enable-gpl")]
+        instructions::perp_prune_orders(ctx, limit)?;
+        Ok(())
+    }
+
     pub fn perp_consume_events(ctx: Context<PerpConsumeEvents>, limit: usize) -> Result<()> {
         #[cfg(feature = "enable-gpl")]
         instructions::perp_consume_events(ctx, limit)?;
