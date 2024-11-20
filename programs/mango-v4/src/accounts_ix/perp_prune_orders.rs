@@ -9,7 +9,7 @@ pub struct PerpPruneOrders<'info> {
     #[account(
         mut,
         has_one = group,
-        // owner is checked at #1
+        // owner is not checked on purpose
     )]
     pub account: AccountLoader<'info, MangoAccountFixed>,
 
