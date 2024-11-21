@@ -2,7 +2,7 @@ use crate::state::{BookSide, Group, MangoAccountFixed, PerpMarket};
 use anchor_lang::prelude::*;
 
 #[derive(Accounts)]
-pub struct PerpPruneOrders<'info> {
+pub struct PerpPurgeOrders<'info> {
     #[account()]
     pub group: AccountLoader<'info, Group>,
 

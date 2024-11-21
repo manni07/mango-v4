@@ -1326,9 +1326,9 @@ pub mod mango_v4 {
         Ok(())
     }
 
-    pub fn perp_prune_orders(ctx: Context<PerpPruneOrders>, limit: u8) -> Result<()> {
+    pub fn perp_purge_orders(ctx: Context<PerpPurgeOrders>, limit: u8) -> Result<()> {
         #[cfg(feature = "enable-gpl")]
-        instructions::perp_prune_orders(ctx, limit)?;
+        instructions::perp_purge_orders(ctx, limit)?;
         Ok(())
     }
 
