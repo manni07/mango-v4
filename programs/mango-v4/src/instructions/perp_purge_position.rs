@@ -62,7 +62,7 @@ pub fn perp_purge_position(ctx: Context<PerpPurgePosition>) -> Result<()> {
         // Update the accounts' perp_spot_transfer statistics.
         let settlement_i64 = settlement.round_to_zero().to_num::<i64>();
         perp_position.perp_spot_transfers += settlement_i64;
-        drop(perp_position);
+        drop(*perp_position);
         account.fixed.perp_spot_transfers += settlement_i64;
 
         // Settle quote token balance
