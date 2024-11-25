@@ -109,7 +109,7 @@ export class Id {
   }
 
   static async fromApi(groupPk: PublicKey): Promise<Id> {
-    const groupMetadataApiUrl = 'https://api.mngo.cloud/data/v4/group-metadata';
+    const groupMetadataApiUrl = 'https://mango-v4-simple-api.fly.dev/metadata';
     const response = await fetch(groupMetadataApiUrl);
     const jsonData = await response.json();
 
