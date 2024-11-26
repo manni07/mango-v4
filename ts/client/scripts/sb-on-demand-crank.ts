@@ -34,7 +34,7 @@ import {
 import { PerpMarketIndex } from '../src/accounts/perp';
 import { MangoClient } from '../src/client';
 import { MANGO_V4_ID, MANGO_V4_MAIN_GROUP } from '../src/constants';
-import { createComputeBudgetIx } from '../src/utils/rpc';
+import { createComputeBudgetIx, createComputeLimitIx } from '../src/utils/rpc';
 import { manageFeeWebSocket } from './manageFeeWs';
 import {
   getOraclesForMangoGroup,
@@ -202,7 +202,7 @@ async function setupBackgroundRefresh(
         function (a, b) {
           return a.oracle.oraclePk.equals(b.oracle.oraclePk);
         },
-      );
+      ).slice(0, 6);
 
       console.log(
         `[main] round candidates | Stale: ${staleOracles
@@ -212,68 +212,62 @@ async function setupBackgroundRefresh(
           .join(', ')}`,
       );
 
-      // todo use chunk
-      // todo use luts
+      if (
+        oraclesToCrank.length == 0
+      ) {
+        await new Promise((r) => setTimeout(r, SLEEP_MS));
+        continue;
+      }
 
-      // const [pullIxs, luts] = await PullFeed.fetchUpdateManyIx(
-      //   sbOnDemandProgram as any,
-      //   {
-      //     feeds: oraclesToCrank.map((o) => new PublicKey(o.oracle.oraclePk)),
-      //     numSignatures: 3,
-      //   },
-      // );
-
-      const recentSlothashes = await RecentSlotHashes.fetchLatestNSlothashes(
-        connection as any,
-        30,
+      // can do 6 per tx
+      const numSignatures = 2;
+      const [pullIx, _luts] = await PullFeed.fetchUpdateManyIx(
+        sbOnDemandProgram as any,
+        {
+          feeds: oraclesToCrank.map((o) => new PublicKey(o.oracle.oraclePk)),
+          numSignatures,
+          crossbarClient,
+          payer: user.publicKey,
+        },
       );
-      const pullIxs = (
-        await Promise.all(
-          oraclesToCrank.map(async (oracle) => {
-            const pullIx = await preparePullIx(
-              sbOnDemandProgram,
-              oracle,
-              recentSlothashes,
-            );
-            return pullIx !== undefined ? pullIx : null;
-          }),
-        )
-      ).filter((pullIx) => pullIx !== null);
 
       const ixPreparedAt = Date.now();
 
-      const ixsChunks = chunk(shuffle(pullIxs), 2, false);
       const lamportsPerCu_ = Math.min(
         Math.max(lamportsPerCu ?? 150_000, 150_000),
         500_000,
       );
+
+      const cuLimit = 150_000 + oraclesToCrank.length * 30_000 * numSignatures;
 
       // dont await, fire and forget
       sendSignAndConfirmTransactions({
         connection,
         wallet: new Wallet(user),
         backupConnections: [
-          ...(CLUSTER_URL_2 ? [new Connection(LITE_RPC_URL!, 'recent')] : []),
+          ...(LITE_RPC_URL ? [new Connection(LITE_RPC_URL!, 'recent')] : []),
           ...(CLUSTER_URL_2 ? [new Connection(CLUSTER_URL_2!, 'recent')] : []),
         ],
         // fail rather quickly and retry submission from scratch
         // timeout using finalized to stay below switchboard oracle staleness limit
         timeoutStrategy: { block, startBlockCheckAfterSecs: 20 },
-        transactionInstructions: ixsChunks.map((txChunk) => ({
+        transactionInstructions: [{
           instructionsSet: [
             {
               signers: [],
               transactionInstruction: createComputeBudgetIx(lamportsPerCu_),
             },
-            ...txChunk.map((tx) => ({
+            {
               signers: [],
-              transactionInstruction: tx,
-              // TODO disable alts for now
-              // alts: SBOD_ORACLE_LUTS.map(x=>new PublicKey(x)),
-            })),
+              transactionInstruction: createComputeLimitIx(cuLimit),
+            },
+            {
+              signers: [],
+              transactionInstruction: pullIx,
+            }
           ],
           sequenceType: SequenceType.Parallel,
-        })),
+        }],
         config: {
           maxTxesInBatch: 10,
           autoRetry: false,
