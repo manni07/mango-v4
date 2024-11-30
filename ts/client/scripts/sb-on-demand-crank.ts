@@ -33,6 +33,21 @@ import {
   getOraclesForMangoGroup,
   OraclesFromMangoGroupInterface,
 } from './sb-on-demand-crank-utils';
+import {
+  cycleDurationHistogram,
+  exposePromMetrics,
+  fetchIxDurationHistogram,
+  fetchIxFailureCounter,
+  fetchIxSuccessCounter,
+  refreshFailureCounter,
+  refreshSuccessCounter,
+  relativeSlotsSinceLastUpdateHistogram,
+  relativeVarianceSinceLastUpdateHistogram,
+  sendTxCounter,
+  sendTxErrorCounter,
+  updateBlockhashSlotDurationHistogram,
+  updateOracleAiDurationHistogram,
+} from './sb-on-demand-metrics';
 
 const CLUSTER: Cluster =
   (process.env.CLUSTER_OVERRIDE as Cluster) || 'mainnet-beta';
@@ -107,14 +122,17 @@ async function setupBackgroundRefresh(
   const refreshGroup = async function (): Promise<void> {
     try {
       await group.reloadAll(client);
+      refreshSuccessCounter.labels({ label: 'group.reloadAll' }).inc(1);
       result.oracles = await prepareCandidateOracles(
         client,
         group,
         sbOnDemandProgram,
         crossbarClient,
       );
-    } catch (e) {
-      console.error('[group]', e);
+      refreshSuccessCounter.labels({ label: 'prepareCandidateOracles' }).inc(1);
+    } catch (err) {
+      console.error('[refresh]', err);
+      refreshFailureCounter.label({ err }).inc(1);
     }
     setTimeout(refreshGroup, GROUP_REFRESH_INTERVAL);
   };
@@ -150,11 +168,20 @@ async function setupBackgroundRefresh(
         client.connection.getSlot('processed'),
       ]);
 
-      // refresh oracle accounts to know when each oracle was late updated
+      refreshSuccessCounter.labels({ label: 'getLatestBlockhash+getSlot' }).inc(1);
+      const blockhashSlotUpdateAt = Date.now();
+      updateBlockhashSlotDurationHistogram.observe(
+        blockhashSlotUpdateAt - startedAt,
+      );
+
+      // refresh oracle accounts to know when each oracle was last updated
       // updates oracle in place
       await updateFilteredOraclesAis(client, sbOnDemandProgram, oracles);
-
+      refreshSuccessCounter.labels({ label: 'updateFilteredOraclesAis' }).inc(1);
       const aisUpdatedAt = Date.now();
+      updateOracleAiDurationHistogram.observe(
+        aisUpdatedAt - blockhashSlotUpdateAt,
+      );
 
       const staleOracles = await filterForStaleOracles(
         oracles,
@@ -162,7 +189,7 @@ async function setupBackgroundRefresh(
         group,
         slot,
       );
-
+      refreshSuccessCounter.labels({ label: 'filterForStaleOracles' }).inc(1);
       const staleFilteredAt = Date.now();
 
       const crossBarSims = await Promise.all(
@@ -172,12 +199,15 @@ async function setupBackgroundRefresh(
           ]),
         ),
       );
-
+      refreshSuccessCounter.labels({ label: 'simulateFeeds' }).inc(1);
       const simulatedAt = Date.now();
+      fetchIxDurationHistogram.observe(simulatedAt - staleFilteredAt);
 
       const varianceThresholdCrossedOracles =
         await filterForVarianceThresholdOracles(oracles, client, crossBarSims);
-
+      refreshSuccessCounter.labels({ label: 'filterForVarianceThresholdOracles' }).inc(
+        1,
+      );
       const varianceFilteredAt = Date.now();
 
       const oraclesToCrank: OracleMetaInterface[] = uniqWith(
@@ -203,7 +233,8 @@ async function setupBackgroundRefresh(
 
         const numSignatures = 2;
         try {
-        // TODO: don't ignore LUTS
+          // TODO: don't ignore LUTS
+          // TODO: investigate if more data can be prefetced (as was before)
           const [pullIx, _luts] = await PullFeed.fetchUpdateManyIx(
             sbOnDemandProgram as any,
             {
@@ -213,8 +244,11 @@ async function setupBackgroundRefresh(
               payer: user.publicKey,
             },
           );
-
+          for (const oracle of oracleChunk) {
+            fetchIxSuccessCounter.labels({ oracle: oracle.oracle.name }).inc(1);
+          }
           const ixPreparedAt = Date.now();
+          fetchIxDurationHistogram.observe(ixPreparedAt - simulatedAt);
 
           const lamportsPerCu_ = Math.min(
             Math.max(lamportsPerCu ?? 150_000, 150_000),
@@ -267,15 +301,20 @@ async function setupBackgroundRefresh(
             },
             callbacks: {
               afterEveryTxSend: function (data) {
+                sendTxCounter.inc(1);
                 const sentAt = Date.now();
                 const total = (sentAt - startedAt) / 1000;
-                const aiUpdate = (aisUpdatedAt - startedAt) / 1000;
+                cycleDurationHistogram.observe(sentAt - startedAt);
+                const blockhashSlotUpdate =
+                  (blockhashSlotUpdateAt - startedAt) / 1000;
+                const aiUpdate = (aisUpdatedAt - blockhashSlotUpdateAt) / 1000;
                 const staleFilter = (staleFilteredAt - aisUpdatedAt) / 1000;
                 const simulate = (simulatedAt - staleFilteredAt) / 1000;
                 const varianceFilter =
                   (varianceFilteredAt - simulatedAt) / 1000;
                 const ixPrepare = (ixPreparedAt - varianceFilteredAt) / 1000;
                 const timing = {
+                  blockhashSlotUpdate,
                   aiUpdate,
                   staleFilter,
                   simulate,
@@ -287,35 +326,42 @@ async function setupBackgroundRefresh(
                   `[tx send] https://solscan.io/tx/${data['txid']}, in ${total}s, lamportsPerCu_ ${lamportsPerCu_}, lamportsPerCu ${lamportsPerCu}, timiming ${JSON.stringify(timing)}`,
                 );
               },
-              onError: function (e, notProcessedTransactions) {
+              onError: function (err, notProcessedTransactions) {
+                sendTxErrorCounter.labels(err).inc(1);
                 console.error(
-                  `[tx send] ${notProcessedTransactions.length} error(s) after ${(Date.now() - ixPreparedAt) / 1000}s ${JSON.stringify(e)}`,
+                  `[tx send] ${notProcessedTransactions.length} error(s) after ${(Date.now() - ixPreparedAt) / 1000}s ${JSON.stringify(err)}`,
                 );
               },
             },
-          }).catch((reason) =>
+          }).catch((reason) => {
+            sendTxErrorCounter
+              .labels({ err: `prom rejected: ${JSON.stringify(reason)}` })
+              .inc(1);
             console.error(
               `[tx send] promise rejected after ${(Date.now() - ixPreparedAt) / 1000}s ${JSON.stringify(reason)}`,
-            ),
-          );
-        } catch (e) {
+            );
+          });
+        } catch (err) {
           console.error(
-            `[ix fetch] error after ${(Date.now() - varianceFilteredAt) / 1000}s ${JSON.stringify(e)}`,
+            `[ix fetch] error after ${(Date.now() - varianceFilteredAt) / 1000}s ${JSON.stringify(err)}`,
           );
+          fetchIxFailureCounter.labels({ err }).inc(1);
         }
       });
 
       await new Promise((r) => setTimeout(r, SLEEP_MS));
-    } catch (error) {
-      console.error('[main]', error);
+    } catch (err) {
+      console.error('[main]', err);
+      refreshFailureCounter.labels({ err }).inc(1);
     }
   }
 })();
+exposePromMetrics(Number(process.env.PORT!), process.env.BIND);
 
 /**
  * prepares the instruction to update an individual oracle using the cached data on oracle
  */
-async function preparePullIx(
+async function _preparePullIx(
   sbOnDemandProgram,
   oracle: OracleMetaInterface,
   recentSlothashes?: Array<[BN, string]>,
@@ -377,6 +423,9 @@ async function filterForVarianceThresholdOracles(
 
     const changePct = (Math.abs(res.price - simPrice) * 100) / res.price;
     const thresholdPct = VARIANCE_THRESHOLD_PCT_BY_TIER[item.oracle.tier];
+    relativeVarianceSinceLastUpdateHistogram
+      .labels({ oracle: item.oracle.name })
+      .observe(changePct / thresholdPct);
     if (changePct > thresholdPct) {
       console.log(
         `[filter variance] ${item.oracle.name}, candidate: ${thresholdPct} < ${changePct}, ${simPrice}, ${res.price}`,
@@ -412,9 +461,12 @@ async function filterForStaleOracles(
     const safetySeconds = 20 * 3 + 10;
     const safetySlots = safetySeconds * 2.5;
     const slotsUntilUpdate = item.decodedPullFeed.maxStaleness - safetySlots;
+    relativeSlotsSinceLastUpdateHistogram
+      .labels({ oracle: item.oracle.name })
+      .observe(slotsSinceLastUpdate / slotsUntilUpdate);
     if (slotsSinceLastUpdate > slotsUntilUpdate) {
       console.log(
-        `[filter stale] ${item.oracle.name}, candidate, ${item.decodedPullFeed.maxStaleness}, ${lastProcessedSlot}, ${res.lastUpdatedSlot}, ${slotsSinceLastUpdate}`,
+        `[filter stale] ${item.oracle.name}, candidate, ${slotsSinceLastUpdate} > ${slotsUntilUpdate}, ${lastProcessedSlot}`,
       );
 
       // check if oracle is fallback and primary is not stale
@@ -436,7 +488,7 @@ async function filterForStaleOracles(
       staleOracles.push(item);
     } else {
       console.log(
-        `[filter stale] ${item.oracle.name}, non-candidate, ${item.decodedPullFeed.maxStaleness}, ${lastProcessedSlot}, ${res.lastUpdatedSlot}, ${slotsSinceLastUpdate}`,
+        `[filter stale] ${item.oracle.name}, non-candidate, ${slotsSinceLastUpdate} < ${slotsUntilUpdate}, ${lastProcessedSlot}`
       );
     }
   }
