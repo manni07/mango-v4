@@ -12,25 +12,18 @@ import {
   ON_DEMAND_MAINNET_PID,
   PullFeed,
   Queue,
-  RecentSlotHashes,
 } from '@switchboard-xyz/on-demand';
 import fs from 'fs';
 import chunk from 'lodash/chunk';
-import shuffle from 'lodash/shuffle';
 import uniqWith from 'lodash/uniqWith';
-import zipWith from 'lodash/zipWith';
 import { Program as Anchor30Program, BN, Idl } from 'switchboard-anchor';
 
 import { SequenceType } from '@blockworks-foundation/mangolana/lib/globalTypes';
 import { sendSignAndConfirmTransactions } from '@blockworks-foundation/mangolana/lib/transactions';
-import { BorshAccountsCoder } from '@coral-xyz/anchor';
 import { AnchorProvider, Wallet } from 'switchboard-anchor';
-import { TokenIndex } from '../src/accounts/bank';
+import { Bank, TokenIndex } from '../src/accounts/bank';
 import { Group } from '../src/accounts/group';
-import {
-  isOracleStaleOrUnconfident,
-  parseSwitchboardOracle,
-} from '../src/accounts/oracle';
+import { parseSwitchboardOracle } from '../src/accounts/oracle';
 import { PerpMarketIndex } from '../src/accounts/perp';
 import { MangoClient } from '../src/client';
 import { MANGO_V4_ID, MANGO_V4_MAIN_GROUP } from '../src/constants';
@@ -73,10 +66,10 @@ interface OracleMetaInterface {
   oracle: {
     oraclePk: PublicKey;
     name: string;
+    tier: string;
     fallbackForOracle: PublicKey | undefined;
     tokenIndex: TokenIndex | undefined;
     perpMarketIndex: PerpMarketIndex | undefined;
-    isOracleStaleOrUnconfident: boolean;
   };
   ai: AccountInfo<Buffer> | null;
   decodedPullFeed: any;
@@ -92,11 +85,11 @@ interface OracleMetaInterface {
 }
 
 /// refresh mango group to detect new oracles added through governance
-/// without a restart within 1 minute, result object will be dynamically
-/// updated
+/// without a restart within 3 minutes, result object will be dynamically
+/// updated as well as the passed group
 async function setupBackgroundRefresh(
   client: MangoClient,
-  group: Group,
+  group: Group, /// modified periodically
   sbOnDemandProgram: Anchor30Program<Idl>,
   crossbarClient: CrossbarClient,
 ): Promise<{ oracles: OracleMetaInterface[] }> {
@@ -110,7 +103,7 @@ async function setupBackgroundRefresh(
 
   const result = { oracles };
 
-  const GROUP_REFRESH_INTERVAL = 60_000;
+  const GROUP_REFRESH_INTERVAL = 180_000; // refresh every 3 minutes
   const refreshGroup = async function (): Promise<void> {
     try {
       await group.reloadAll(client);
@@ -146,6 +139,7 @@ async function setupBackgroundRefresh(
   while (true) {
     try {
       // pull a fresh reference to the oracles from the background refresher
+      // group is updated in place
       const { oracles } = refresh;
 
       const startedAt = Date.now();
@@ -156,30 +150,23 @@ async function setupBackgroundRefresh(
         client.connection.getSlot('processed'),
       ]);
 
-      await updateFilteredOraclesAis(
-        client,
-        sbOnDemandProgram,
-        group,
-        slot,
-        oracles,
-      );
-
-      const onlyEssentialOracles = oracles.filter(
-        (o) => o.oracle.isOracleStaleOrUnconfident,
-      );
+      // refresh oracle accounts to know when each oracle was late updated
+      // updates oracle in place
+      await updateFilteredOraclesAis(client, sbOnDemandProgram, oracles);
 
       const aisUpdatedAt = Date.now();
 
       const staleOracles = await filterForStaleOracles(
-        onlyEssentialOracles,
+        oracles,
         client,
+        group,
         slot,
       );
 
       const staleFilteredAt = Date.now();
 
       const crossBarSims = await Promise.all(
-        onlyEssentialOracles.map((o) =>
+        oracles.map((o) =>
           crossbarClient.simulateFeeds([
             new Buffer(o.parsedConfigs.feedHash).toString('hex'),
           ]),
@@ -189,11 +176,7 @@ async function setupBackgroundRefresh(
       const simulatedAt = Date.now();
 
       const varianceThresholdCrossedOracles =
-        await filterForVarianceThresholdOracles(
-          onlyEssentialOracles,
-          client,
-          crossBarSims,
-        );
+        await filterForVarianceThresholdOracles(oracles, client, crossBarSims);
 
       const varianceFilteredAt = Date.now();
 
@@ -202,8 +185,7 @@ async function setupBackgroundRefresh(
         function (a, b) {
           return a.oracle.oraclePk.equals(b.oracle.oraclePk);
         },
-      ).slice(0, 6);
-
+      );
       console.log(
         `[main] round candidates | Stale: ${staleOracles
           .map((o) => o.oracle.name)
@@ -212,101 +194,116 @@ async function setupBackgroundRefresh(
           .join(', ')}`,
       );
 
-      if (
-        oraclesToCrank.length == 0
-      ) {
-        await new Promise((r) => setTimeout(r, SLEEP_MS));
-        continue;
-      }
-
       // can do 6 per tx
-      const numSignatures = 2;
-      const [pullIx, _luts] = await PullFeed.fetchUpdateManyIx(
-        sbOnDemandProgram as any,
-        {
-          feeds: oraclesToCrank.map((o) => new PublicKey(o.oracle.oraclePk)),
-          numSignatures,
-          crossbarClient,
-          payer: user.publicKey,
-        },
-      );
+      const crankChunks: OracleMetaInterface[][] = chunk(oraclesToCrank, 6);
 
-      const ixPreparedAt = Date.now();
+      // don't wait for switchboard API or delay retry
+      crankChunks.map(async (oracleChunk) => {
+        if (oracleChunk.length == 0) return;
 
-      const lamportsPerCu_ = Math.min(
-        Math.max(lamportsPerCu ?? 150_000, 150_000),
-        500_000,
-      );
-
-      const cuLimit = 150_000 + oraclesToCrank.length * 30_000 * numSignatures;
-
-      // dont await, fire and forget
-      sendSignAndConfirmTransactions({
-        connection,
-        wallet: new Wallet(user),
-        backupConnections: [
-          ...(LITE_RPC_URL ? [new Connection(LITE_RPC_URL!, 'recent')] : []),
-          ...(CLUSTER_URL_2 ? [new Connection(CLUSTER_URL_2!, 'recent')] : []),
-        ],
-        // fail rather quickly and retry submission from scratch
-        // timeout using finalized to stay below switchboard oracle staleness limit
-        timeoutStrategy: { block, startBlockCheckAfterSecs: 20 },
-        transactionInstructions: [{
-          instructionsSet: [
+        const numSignatures = 2;
+        try {
+        // TODO: don't ignore LUTS
+          const [pullIx, _luts] = await PullFeed.fetchUpdateManyIx(
+            sbOnDemandProgram as any,
             {
-              signers: [],
-              transactionInstruction: createComputeBudgetIx(lamportsPerCu_),
+              feeds: oracleChunk.map((o) => new PublicKey(o.oracle.oraclePk)),
+              numSignatures,
+              crossbarClient,
+              payer: user.publicKey,
             },
-            {
-              signers: [],
-              transactionInstruction: createComputeLimitIx(cuLimit),
-            },
-            {
-              signers: [],
-              transactionInstruction: pullIx,
-            }
-          ],
-          sequenceType: SequenceType.Parallel,
-        }],
-        config: {
-          maxTxesInBatch: 10,
-          autoRetry: false,
-          logFlowInfo: false,
-          // TODO disable alts for now
-          // useVersionedTransactions: true,
-        },
-        callbacks: {
-          afterEveryTxSend: function (data) {
-            const sentAt = Date.now();
-            const total = (sentAt - startedAt) / 1000;
-            const aiUpdate = (aisUpdatedAt - startedAt) / 1000;
-            const staleFilter = (staleFilteredAt - aisUpdatedAt) / 1000;
-            const simulate = (simulatedAt - staleFilteredAt) / 1000;
-            const varianceFilter = (varianceFilteredAt - simulatedAt) / 1000;
-            const ixPrepare = (ixPreparedAt - varianceFilteredAt) / 1000;
-            const timing = {
-              aiUpdate,
-              staleFilter,
-              simulate,
-              varianceFilter,
-              ixPrepare,
-            };
+          );
 
-            console.log(
-              `[tx send] https://solscan.io/tx/${data['txid']}, in ${total}s, lamportsPerCu_ ${lamportsPerCu_}, lamportsPerCu ${lamportsPerCu}, timiming ${JSON.stringify(timing)}`,
-            );
-          },
-          onError: function (e, notProcessedTransactions) {
+          const ixPreparedAt = Date.now();
+
+          const lamportsPerCu_ = Math.min(
+            Math.max(lamportsPerCu ?? 150_000, 150_000),
+            500_000,
+          );
+
+          const cuLimit = 150_000 + oracleChunk.length * 30_000 * numSignatures;
+
+          // no need to await, fire and forget
+          sendSignAndConfirmTransactions({
+            connection,
+            wallet: new Wallet(user),
+            backupConnections: [
+              ...(LITE_RPC_URL
+                ? [new Connection(LITE_RPC_URL!, 'recent')]
+                : []),
+              ...(CLUSTER_URL_2
+                ? [new Connection(CLUSTER_URL_2!, 'recent')]
+                : []),
+            ],
+            // fail rather quickly and retry submission from scratch
+            // timeout using finalized to stay below switchboard oracle staleness limit
+            timeoutStrategy: { block, startBlockCheckAfterSecs: 20 },
+            transactionInstructions: [
+              {
+                instructionsSet: [
+                  {
+                    signers: [],
+                    transactionInstruction:
+                      createComputeBudgetIx(lamportsPerCu_),
+                  },
+                  {
+                    signers: [],
+                    transactionInstruction: createComputeLimitIx(cuLimit),
+                  },
+                  {
+                    signers: [],
+                    transactionInstruction: pullIx,
+                  },
+                ],
+                sequenceType: SequenceType.Parallel,
+              },
+            ],
+            config: {
+              maxTxesInBatch: 10,
+              autoRetry: false,
+              logFlowInfo: false,
+              // TODO disable alts for now
+              // useVersionedTransactions: true,
+            },
+            callbacks: {
+              afterEveryTxSend: function (data) {
+                const sentAt = Date.now();
+                const total = (sentAt - startedAt) / 1000;
+                const aiUpdate = (aisUpdatedAt - startedAt) / 1000;
+                const staleFilter = (staleFilteredAt - aisUpdatedAt) / 1000;
+                const simulate = (simulatedAt - staleFilteredAt) / 1000;
+                const varianceFilter =
+                  (varianceFilteredAt - simulatedAt) / 1000;
+                const ixPrepare = (ixPreparedAt - varianceFilteredAt) / 1000;
+                const timing = {
+                  aiUpdate,
+                  staleFilter,
+                  simulate,
+                  varianceFilter,
+                  ixPrepare,
+                };
+
+                console.log(
+                  `[tx send] https://solscan.io/tx/${data['txid']}, in ${total}s, lamportsPerCu_ ${lamportsPerCu_}, lamportsPerCu ${lamportsPerCu}, timiming ${JSON.stringify(timing)}`,
+                );
+              },
+              onError: function (e, notProcessedTransactions) {
+                console.error(
+                  `[tx send] ${notProcessedTransactions.length} error(s) after ${(Date.now() - ixPreparedAt) / 1000}s ${JSON.stringify(e)}`,
+                );
+              },
+            },
+          }).catch((reason) =>
             console.error(
-              `[tx send] ${notProcessedTransactions.length} error(s) after ${(Date.now() - ixPreparedAt) / 1000}s ${JSON.stringify(e)}`,
-            );
-          },
-        },
-      }).catch((reason) =>
-        console.error(
-          `[tx send] promise rejected after ${(Date.now() - ixPreparedAt) / 1000}s ${JSON.stringify(reason)}`,
-        ),
-      );
+              `[tx send] promise rejected after ${(Date.now() - ixPreparedAt) / 1000}s ${JSON.stringify(reason)}`,
+            ),
+          );
+        } catch (e) {
+          console.error(
+            `[ix fetch] error after ${(Date.now() - varianceFilteredAt) / 1000}s ${JSON.stringify(e)}`,
+          );
+        }
+      });
 
       await new Promise((r) => setTimeout(r, SLEEP_MS));
     } catch (error) {
@@ -345,6 +342,19 @@ async function preparePullIx(
   }
 }
 
+const VARIANCE_THRESHOLD_PCT_BY_TIER = {
+  S: 0.5,
+  AAA: 1,
+  AA: 1,
+  A: 1,
+  'A-': 1,
+  BBB: 2,
+  BB: 2,
+  B: 2,
+  C: 4,
+  D: Number.MAX_VALUE,
+};
+
 async function filterForVarianceThresholdOracles(
   filteredOracles: OracleMetaInterface[],
   client: MangoClient,
@@ -366,18 +376,15 @@ async function filterForVarianceThresholdOracles(
       crossBarSim[0].results.length;
 
     const changePct = (Math.abs(res.price - simPrice) * 100) / res.price;
-    if (changePct > item.decodedPullFeed.maxVariance / 1000000000) {
+    const thresholdPct = VARIANCE_THRESHOLD_PCT_BY_TIER[item.oracle.tier];
+    if (changePct > thresholdPct) {
       console.log(
-        `[filter variance] ${item.oracle.name}, candidate, ${
-          item.decodedPullFeed.maxVariance / 1000000000
-        }, ${simPrice}, ${res.price}, ${changePct}`,
+        `[filter variance] ${item.oracle.name}, candidate: ${thresholdPct} < ${changePct}, ${simPrice}, ${res.price}`,
       );
       varianceThresholdCrossedOracles.push(item);
     } else {
       console.log(
-        `[filter variance] ${item.oracle.name}, non-candidate, ${
-          item.decodedPullFeed.maxVariance / 1000000000
-        }, ${simPrice}, ${res.price}, ${changePct}`,
+        `[filter variance] ${item.oracle.name}, non-candidate: ${thresholdPct} > ${changePct}, ${simPrice}, ${res.price},`,
       );
     }
   }
@@ -387,31 +394,49 @@ async function filterForVarianceThresholdOracles(
 async function filterForStaleOracles(
   filteredOracles: OracleMetaInterface[],
   client: MangoClient,
-  slot: number,
+  group: Group,
+  lastProcessedSlot: number,
 ): Promise<OracleMetaInterface[]> {
   const staleOracles = new Array<OracleMetaInterface>();
   for (const item of filteredOracles) {
+    // we know that all these oracles are SBOD
     const res = await parseSwitchboardOracle(
       item.oracle.oraclePk,
       item.ai!,
       client.connection,
     );
 
-    const diff = slot - res.lastUpdatedSlot;
-    if (
-      // maxStaleness will usually be 250 (=100s)
-      // one iteration takes 10s, retry is every 20s
-      // this allows for 2 retries until the oracle becomes stale
-      diff >
-      item.decodedPullFeed.maxStaleness * 0.3
-    ) {
+    const slotsSinceLastUpdate = lastProcessedSlot - res.lastUpdatedSlot;
+    // one iteration takes 10s, retry is every 20s
+    // this allows for at least 2 retries until the oracle becomes stale
+    const safetySeconds = 20 * 3 + 10;
+    const safetySlots = safetySeconds * 2.5;
+    const slotsUntilUpdate = item.decodedPullFeed.maxStaleness - safetySlots;
+    if (slotsSinceLastUpdate > slotsUntilUpdate) {
       console.log(
-        `[filter stale] ${item.oracle.name}, candidate, ${item.decodedPullFeed.maxStaleness}, ${slot}, ${res.lastUpdatedSlot}, ${diff}`,
+        `[filter stale] ${item.oracle.name}, candidate, ${item.decodedPullFeed.maxStaleness}, ${lastProcessedSlot}, ${res.lastUpdatedSlot}, ${slotsSinceLastUpdate}`,
       );
+
+      // check if oracle is fallback and primary is not stale
+      if (item.oracle.fallbackForOracle) {
+        const mainOraclePk = item.oracle.fallbackForOracle.toString();
+        const [bank] = group.banksMapByOracle.get(mainOraclePk) as Bank[];
+        // we need a working staleness check for every oracle type not only SBOD in this case
+        // this info is up to date bc. of setupBackgroundRefresh
+        if (!bank.isOracleStaleOrUnconfident(lastProcessedSlot + safetySlots)) {
+          console.log(
+            `[filter stale] fallback ${item.oracle.name}, non-candidate, bc. main oracle is up to date ${mainOraclePk}`,
+          );
+          // skip to save on gas, primary is good enough
+          continue;
+        }
+      }
+
+      // this oracle is stale and there's no fresh primary either
       staleOracles.push(item);
     } else {
       console.log(
-        `[filter stale] ${item.oracle.name}, non-candidate, ${item.decodedPullFeed.maxStaleness}, ${slot}, ${res.lastUpdatedSlot}, ${diff}`,
+        `[filter stale] ${item.oracle.name}, non-candidate, ${item.decodedPullFeed.maxStaleness}, ${lastProcessedSlot}, ${res.lastUpdatedSlot}, ${slotsSinceLastUpdate}`,
       );
     }
   }
@@ -461,7 +486,7 @@ async function prepareCandidateOracles(
     );
   }
 
-  // combine account info
+  // combine account info and remove non sbod owned oracles
   const sbodOracles = oracles
     .map((o, i) => {
       return { oracle: o, ai: ais[i] };
@@ -517,10 +542,10 @@ function extendOraclesManually(
       {
         oraclePk: new PublicKey('EtbG8PSDCyCSmDH8RE4Nf2qTV9d6P6zShzHY2XWvjFJf'),
         name: 'BTC/USD',
+        tier: 'S',
         fallbackForOracle: undefined,
         tokenIndex: undefined,
         perpMarketIndex: undefined,
-        isOracleStaleOrUnconfident: false,
       },
     ];
   }
@@ -537,10 +562,10 @@ function extendOraclesManually(
     return {
       oraclePk: new PublicKey(item[1]),
       name: item[0],
+      tier: 'S',
       fallbackForOracle: undefined,
       tokenIndex: undefined,
       perpMarketIndex: undefined,
-      isOracleStaleOrUnconfident: false,
     };
   });
 }
@@ -606,8 +631,6 @@ async function setupSwitchboard(client: MangoClient): Promise<{
 async function updateFilteredOraclesAis(
   client: MangoClient,
   sbOnDemandProgram: Anchor30Program<Idl>,
-  group: Group,
-  nowSlot: number,
   filteredOracles: OracleMetaInterface[],
 ): Promise<void> {
   const ais = (
@@ -631,73 +654,4 @@ async function updateFilteredOraclesAis(
     );
     fo.decodedPullFeed = decodedPullFeed;
   });
-
-  // make a note iff a sbod oracle, is a fallback for another oracle, where the main oracle is stale or unconfident
-  {
-    // filter where sbod oracle is a fallback for another oracle
-    const publicKeysWithIndices = filteredOracles
-      .map((item, idx) => {
-        return { publicKey: item.oracle.fallbackForOracle, idx: idx };
-      })
-      .filter((item) => item.publicKey !== undefined);
-    const ais = (
-      await Promise.all(
-        chunk(
-          publicKeysWithIndices.map((item) => item.publicKey),
-          50,
-          false,
-        ).map((chunk_) =>
-          client.program.provider.connection.getMultipleAccountsInfo(chunk_),
-        ),
-      )
-    ).flat();
-
-    const coder = new BorshAccountsCoder(client.program.idl);
-
-    await Promise.all(
-      zipWith(publicKeysWithIndices, ais, function (publicKeyWithIndex, ai) {
-        return { publicKeyWithIndex, ai };
-      }).map(async (item) => {
-        // fetch main oracle, and check if it is stale or unconfident
-        const filteredOracle = filteredOracles[item.publicKeyWithIndex.idx];
-        let mintDecimals, maxStalenessSlots, confFilter;
-        if (filteredOracle.oracle.tokenIndex !== undefined) {
-          const bank = group.getFirstBankByTokenIndex(
-            filteredOracle.oracle.tokenIndex,
-          );
-          mintDecimals = bank.mintDecimals;
-          maxStalenessSlots = bank.oracleConfig.maxStalenessSlots;
-          confFilter = bank.oracleConfig.confFilter;
-        } else if (filteredOracle.oracle.perpMarketIndex !== undefined) {
-          const pm = group.getPerpMarketByMarketIndex(
-            filteredOracle.oracle.perpMarketIndex,
-          );
-          mintDecimals = pm.baseDecimals;
-          maxStalenessSlots = pm.oracleConfig.maxStalenessSlots;
-          confFilter = pm.oracleConfig.confFilter;
-        } else {
-          return;
-        }
-        const result = await Group.decodePriceFromOracleAi(
-          group,
-          coder,
-          filteredOracle.oracle.oraclePk,
-          item.ai,
-          mintDecimals,
-          client,
-        );
-        filteredOracle.oracle.isOracleStaleOrUnconfident =
-          isOracleStaleOrUnconfident(
-            nowSlot,
-            maxStalenessSlots.toNumber() - 100, // mark as stale a bit early, so we can keep fallback prepared
-            result.lastUpdatedSlot,
-            result.deviation,
-            confFilter,
-            result.price,
-            true,
-            `${filteredOracle.oracle.name} fallback-main-oracle-check`,
-          );
-      }),
-    );
-  }
 }
