@@ -288,9 +288,7 @@ export const createComputeBudgetIx = (
   return computeBudgetIx;
 };
 
-export const createComputeLimitIx = (
-  units: number,
-): TransactionInstruction => {
+export const createComputeLimitIx = (units: number): TransactionInstruction => {
   const computeBudgetIx = ComputeBudgetProgram.setComputeUnitLimit({
     units,
   });
