@@ -219,7 +219,7 @@ export function parseSwitchboardOnDemandOracle(
     }
     values = values.sort((x, y) => (x.value.lt(y.value) ? -1 : 1));
     const feedValue = values[Math.floor(values.length / 2)];
-    const price = new Big(feedValue.value.toString()).div(1e18);
+    const price = new Big(feedValue.value.toString()).div(1e18).toNumber();
     const lastUpdatedSlot = feedValue.slot.toNumber();
     const stdDeviation = getStandardDeviation(
       values.map((val: any) =>
