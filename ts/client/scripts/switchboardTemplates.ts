@@ -2,8 +2,8 @@ const pythSolOracle =
   'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d';
 const pythUsdOracle =
   'eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a';
-const switchboardSolOracle = 'E8TLLh5jkYDvSXfAES7qe3s8Cfjj4hyvjksuvUHe8NEw';
-const switchboardUsdOracle = '2Dv72h14k6ynrUvQ8mhu5ihwrk1Kte6Aj2tpKhXLsHrR';
+const switchboardSolOracle = 'Ceveqpim1FJZfx9DPeFDVDSz2HJavUqPPEJtZ2osNEmS';
+const switchboardUsdOracle = 'FPsyg9RNPPrNuRq94DJ8o96Njfh7gbBxwXNoidioMozG';
 
 export const LSTExactIn = (inMint: string, uiAmountIn: string): string => {
   const template = `tasks:
