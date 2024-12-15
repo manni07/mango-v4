@@ -2,11 +2,10 @@
 name = "mango-client"
 version = "0.1.0"
 description = "A Python client for Mango Markets"
-authors = [""]
+authors = ["manni07"]
 homepage = "https://github.com/blockworks-foundation/mango-v4"
 license = "MIT"
 readme = "README.md"
-documentation = ""
 
 [tool.poetry.dependencies]
 python = "^3.9"
