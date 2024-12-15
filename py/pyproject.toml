@@ -5,7 +5,6 @@ description = "A Python client for Mango Markets"
 authors = ["manni07"]
 homepage = "https://github.com/blockworks-foundation/mango-v4"
 license = "MIT"
-readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.9"
