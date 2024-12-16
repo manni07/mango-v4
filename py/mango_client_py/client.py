@@ -1,18 +1,24 @@
 # mango_client_py/client.py
 
-from anchorpy import AnchorProvider, Program
+from anchorpy import Program, Provider
 from solana.publickey import PublicKey
-from solana.transaction import TransactionInstruction
 from typing import List, Optional, Dict, Any, Callable
-import sys
 
 from .accounts.mango_account import MangoAccounts
 from .accounts.oracles import Oracles
-from .accounts.perp import Perp
-from .utils import unpack_account, create_account, to_native, uniq
-from .types import Group, MangoAccount, TokenIndex, HealthCheckKind, MangoSignatureStatus, RecentPrioritizationFee, MangoSignatureStatus
-from .utils.rpc import send_transaction
-
+from .accounts.serum3 import Serum3  # Falls Serum3 in einem separaten Modul ist
+from .accounts.perp import Perp  # Import des Perp Moduls
+from .utils import (
+    unpack_account,
+    create_new_account,  # Import der neuen create_account Methode
+    to_native,
+    get_recent_prioritization_fees,
+    to_native_sell_per_buy_token_price,
+    uniq,
+    # Weitere Hilfsfunktionen...
+)
+from .types import Group, MangoAccount, TokenIndex, HealthCheckKind, MangoSignatureStatus, SYSVAR_INSTRUCTIONS_PUBKEY, RecentPrioritizationFee, U64_MAX_BN, MAX_SAFE_INTEGER
+from .utils import send_transaction
 
 class MangoClientOptions:
     def __init__(
@@ -46,10 +52,7 @@ class MangoClient:
     PERP_SETTLE_PNL_CU_LIMIT = 400000
     PERP_SETTLE_FEES_CU_LIMIT = 20000
     SERUM_SETTLE_FUNDS_CU_LIMIT = 65000
-    MAX_RECENT_PRIORITY_FEE_ACCOUNTS = 64
-    MAX_RECENT_PRIORITY_FEES = 20
 
-    
     class AccountRetriever:
         Scanning = 0
         Fixed = 1
@@ -64,16 +67,20 @@ class MangoClient:
         self.program = program
         self.program_id = program_id
         self.cluster = cluster
+        self.opts = opts
 
         # Initialize sub-modules
         self.accounts = MangoAccounts(self)
         self.oracles = Oracles(self)
+        self.serum3 = Serum3(self)  # Falls Serum3 in einem separaten Modul ist
+        self.perp = Perp(self)  # Initialisierung des Perp Moduls
 
         # Beispiel für die Erhöhung des StackTrace-Limits in Python
+        import sys
         sys.setrecursionlimit(1000)  # Anpassen nach Bedarf
 
     @property
-    def connection(self) -> Any:  # Typ anpassen, z.B. AsyncClient
+    def connection(self) -> AsyncClient:
         return self.program.provider.connection
 
     @property
@@ -82,30 +89,31 @@ class MangoClient:
 
     async def send_and_confirm_transaction(
         self,
-        ixs: List[Any],  # Typ anpassen, z.B. TransactionInstruction
+        ixs: List[TransactionInstruction],
         opts: Optional[Dict[str, Any]] = None
     ) -> MangoSignatureStatus:
-        # Implementieren Sie die Logik zum Senden und Bestätigen der Transaktion
+        """
+        Implementiert die Logik zum Senden und Bestätigen der Transaktion.
+        """
         opts = opts or {}
-        prioritization_fee = opts.get('prioritization_fee', self.program.opts.prioritization_fee)
+        prioritization_fee = opts.get('prioritization_fee', self.opts.prioritization_fee)
 
-        if self.program.opts.estimate_fee or opts.get('estimate_fee', False):
+        if self.opts.estimate_fee or opts.get('estimate_fee', False):
             prioritization_fee = await self.estimate_prioritization_fee(ixs)
         else:
-            prioritization_fee = self.program.opts.prioritization_fee
+            prioritization_fee = self.opts.prioritization_fee
 
         # Senden und Bestätigen der Transaktion
         status = await send_transaction(
             self.program.provider,
-            self.program.opts.prepended_global_additional_instructions + ixs,
+            self.opts.prepended_global_additional_instructions + ixs,
             opts.get('alts', []),
             {
-                'postSendTxCallback': self.program.opts.post_send_tx_callback,
-                'postTxConfirmationCallback': self.program.opts.post_tx_confirmation_callback,
+                'postSendTxCallback': self.opts.post_send_tx_callback,
+                'postTxConfirmationCallback': self.opts.post_tx_confirmation_callback,
                 'prioritizationFee': prioritization_fee,
-                'txConfirmationCommitment': self.program.opts.tx_confirmation_commitment,
-                'multipleConnections': self.program.opts.multiple_connections,
-                **opts,
+                'txConfirmationCommitment': self.opts.tx_confirmation_commitment,
+                'multipleConnections': self.opts.multiple_connections,
             },
         )
         return status
@@ -113,9 +121,12 @@ class MangoClient:
     async def send_and_confirm_transaction_for_group(
         self,
         group: Group,
-        ixs: List[Any],  # Typ anpassen, z.B. TransactionInstruction
+        ixs: List[TransactionInstruction],
         opts: Optional[Dict[str, Any]] = None
     ) -> MangoSignatureStatus:
+        """
+        Sendet und bestätigt eine Transaktion für eine bestimmte Gruppe.
+        """
         opts = opts or {}
         alts = opts.get('alts') or group.address_lookup_tables_list
 
@@ -131,21 +142,9 @@ class MangoClient:
 
         return await self.send_and_confirm_transaction(ixs, {**opts, 'alts': alts })
 
-    # Weitere allgemeine Methoden können hier hinzugefügt werden
-    async def estimate_prioritization_fee(
-        self,
-        ixs: List[TransactionInstruction],
-    ) -> int:
+    async def estimate_prioritization_fee(self, ixs: List[TransactionInstruction]) -> int:
         """
-        Gibt eine Schätzung der Priorisierungsgebühr für eine Reihe von Anweisungen zurück.
-
-        Die Schätzung basiert auf den medianen Gebühren der beschreibbaren Konten, die an der Transaktion beteiligt sind.
-
-        Args:
-            ixs (List[TransactionInstruction]): Die Anweisungen, die die Transaktion ausmachen.
-
-        Returns:
-            int: Geschätzte Priorisierungsgebühr in MikroLamports.
+        Implementiert die Logik zur Schätzung der Priorisierungsgebühr.
         """
         # Sammle alle beschreibbaren Konten aus den Anweisungen
         writable_accounts = [
@@ -156,22 +155,17 @@ class MangoClient:
         )[:self.MAX_RECENT_PRIORITY_FEE_ACCOUNTS]
 
         # Hole die aktuellen Priorisierungsgebühren von der Verbindung
-        priority_fees_response = await self.connection.get_recent_prioritization_fees(
+        priority_fees_response = await get_recent_prioritization_fees(
+            connection=self.connection,
             locked_writable_accounts=unique_writable_accounts
         )
 
-        # Konvertiere die Antwort in eine Liste von RecentPrioritizationFee
-        priority_fees: List[RecentPrioritizationFee] = [
-            RecentPrioritizationFee(slot=fee["slot"], prioritization_fee=fee["prioritizationFee"])
-            for fee in priority_fees_response
-        ]
-
-        if not priority_fees:
+        if not priority_fees_response:
             return 1
 
         # Gruppiere die Gebühren nach Slot und behalte die maximale Gebühr pro Slot
-        priority_fees.sort(key=lambda fee: fee.slot)
-        grouped_fees = groupby(priority_fees, key=attrgetter('slot'))
+        priority_fees_response.sort(key=lambda fee: fee.slot)
+        grouped_fees = groupby(priority_fees_response, key=attrgetter('slot'))
         max_fee_by_slot = [
             max(group, key=lambda fee: fee.prioritization_fee)
             for slot, group in grouped_fees
@@ -188,4 +182,91 @@ class MangoClient:
         median_fee = int(math.ceil(median(recent_prioritization_fees)))
 
         return max(1, median_fee)
-    # Die restlichen Methoden werden in die entsprechenden Submodule (accounts/mango_account.py, accounts/oracles.py) ausgelagert.
+
+    @staticmethod
+    def connect(
+        provider: Provider,
+        cluster: str,  # Entspricht dem Typ `Cluster` in TypeScript
+        program_id: PublicKey,
+        opts: Optional[MangoClientOptions] = None,
+    ) -> 'MangoClient':
+        """
+        Statische Methode zur Verbindung mit einem bestehenden MangoClient.
+
+        Args:
+            provider (Provider): Der Anchor Provider.
+            cluster (str): Der Cluster, z.B. 'mainnet-beta'.
+            program_id (PublicKey): Die PublicKey des Programms.
+            opts (Optional[MangoClientOptions]): Optionale Konfigurationsoptionen.
+
+        Returns:
+            MangoClient: Der verbundene MangoClient.
+        """
+        if opts is None:
+            opts = MangoClientOptions()
+
+        client = MangoClient(
+            program=Program(idl as MangoV4, program_id, provider),
+            program_id=program_id,
+            cluster=cluster,
+            opts=opts,
+        )
+        return client
+
+    @staticmethod
+    def connect_default(cluster_url: str) -> 'MangoClient':
+        """
+        Statische Methode zur Verbindung mit einem MangoClient mit Standardparametern.
+
+        Args:
+            cluster_url (str): Die URL des Clusters, z.B. 'https://api.mainnet-beta.solana.com'.
+
+        Returns:
+            MangoClient: Der verbundene MangoClient.
+        """
+        idl = Idl.from_json(...)  # Laden Sie Ihr IDL hier korrekt
+
+        options = Provider.default_options()
+        connection = AsyncClient(cluster_url, options)
+        wallet = Keypair()  # Verwenden Sie ein Wallet mit einem Keypair
+
+        provider = Provider(connection, wallet, options)
+
+        client = MangoClient(
+            program=Program(idl, PublicKey("MANGO_PROGRAM_ID"), provider),
+            program_id=PublicKey("MANGO_PROGRAM_ID"),
+            cluster='mainnet-beta',
+            opts=MangoClientOptions(
+                ids_source='get-program-accounts',
+            ),
+        )
+        return client
+
+    @staticmethod
+    def connect_for_group_name(
+        provider: Provider,
+        group_name: str,
+    ) -> 'MangoClient':
+        """
+        Statische Methode zur Verbindung mit einem MangoClient basierend auf dem Gruppennamen.
+
+        Args:
+            provider (Provider): Der Anchor Provider.
+            group_name (str): Der Name der Gruppe.
+
+        Returns:
+            MangoClient: Der verbundene MangoClient.
+        """
+        idl = Idl.from_json(...)  # Laden Sie Ihr IDL hier korrekt
+
+        # Hier müssen Sie die entsprechende PublicKey für die Gruppe basierend auf dem Namen finden
+        # Dies könnte eine Mapping-Tabelle sein oder eine API-Abfrage
+        group_public_key = PublicKey("GROUP_PUBLIC_KEY_FOR_" + group_name.upper())
+
+        client = MangoClient(
+            program=Program(idl, PublicKey("MANGO_PROGRAM_ID"), provider),
+            program_id=PublicKey("MANGO_PROGRAM_ID"),
+            cluster='mainnet-beta',
+            opts=MangoClientOptions(),
+        )
+        return client
