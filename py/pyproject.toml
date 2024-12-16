@@ -18,8 +18,10 @@ types-requests = "^2.27.8"
 anchorpy = "^0.24.0"
 solana-py = "^0.28.0"
 bs58 = "^0.4.0"
+spl-token = "^0.3.2"
 fast-copy = "^2.0.1"
 lodash = "^4.17.21"
+decimal = "^0.1.0"
 
 [tool.poetry.dev-dependencies]
 pytest = "^6.2.5"
