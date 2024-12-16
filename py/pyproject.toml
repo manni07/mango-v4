@@ -7,14 +7,19 @@ homepage = "https://github.com/blockworks-foundation/mango-v4"
 license = "MIT"
 
 [tool.poetry.packages]
-include = [{ include = "mango_client_py", from = "py" }]
+include = "mango_client_py"
+from = "py"
 
 [tool.poetry.dependencies]
 python = "^3.9"
-anchorpy = "^0.6.5"
 solana = "^0.21.0"
 requests = "^2.27.1"
 types-requests = "^2.27.8"
+anchorpy = "^0.24.0"
+solana-py = "^0.28.0"
+bs58 = "^0.4.0"
+fast-copy = "^2.0.1"
+lodash = "^4.17.21"
 
 [tool.poetry.dev-dependencies]
 pytest = "^6.2.5"
