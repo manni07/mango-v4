@@ -1,4 +1,4 @@
-# mango_client_py/oracles.py
+# mango_client_py/accounts/oracles.py
 
 from typing import List, Optional
 from solana.publickey import PublicKey
@@ -7,9 +7,9 @@ from solana.keypair import Keypair
 from spl.token.constants import NATIVE_MINT
 from spl.token.instructions import create_close_account_instruction
 
-from .utils import unpack_account, create_account, to_native
-from .types import Group, StubOracle, MangoSignatureStatus, I80F48
-from .utils import create_associated_token_account_idempotent_instruction
+from ..utils import unpack_account, create_account, to_native
+from ..types import Group, StubOracle, MangoSignatureStatus, I80F48
+from ..utils import create_associated_token_account_idempotent_instruction
 
 class Oracles:
     def __init__(self, client):
