@@ -169,7 +169,6 @@ class IxGateParams:
     TokenAddBank: bool = True
     TokenDeposit: bool = True
     TokenDeregister: bool = True
-    TokenEdit: bool = True
     TokenLiqBankruptcy: bool = True
     TokenLiqWithToken: bool = True
     TokenRegister: bool = True
@@ -204,20 +203,6 @@ class IxGateParams:
     SequenceCheck: bool = True
     HealthCheck: bool = True
     GroupChangeInsuranceFund: bool = True
-
-@dataclass
-class InterestRateParams:
-    util0: float
-    rate0: float
-    util1: float
-    rate1: float
-    max_rate: float
-    adjustment_factor: float
-
-@dataclass
-class OracleConfigParams:
-    conf_filter: float
-    max_staleness_slots: Optional[int] = None
 
 # Default TokenRegisterParams
 DefaultTokenRegisterParams = TokenRegisterParams(
@@ -305,67 +290,68 @@ def build_ix_gate(params: IxGateParams) -> int:
         'PerpConsumeEvents': 16,
         'PerpCreateMarket': 17,
         'PerpDeactivatePosition': 18,
-        'PerpLiqBaseOrPositivePnl': 19,
-        'PerpLiqForceCancelOrders': 20,
-        'PerpLiqNegativePnlOrBankruptcy': 21,
-        'PerpPlaceOrder': 22,
-        'PerpSettleFees': 23,
-        'PerpSettlePnl': 24,
-        'PerpUpdateFunding': 25,
-        'Serum3CancelAllOrders': 26,
-        'Serum3CancelOrder': 27,
-        'Serum3CloseOpenOrders': 28,
-        'Serum3CreateOpenOrders': 29,
-        'Serum3DeregisterMarket': 30,
-        'Serum3EditMarket': 31,
-        'Serum3LiqForceCancelOrders': 32,
-        'Serum3PlaceOrder': 33,
-        'Serum3RegisterMarket': 34,
-        'Serum3SettleFunds': 35,
-        'StubOracleClose': 36,
-        'StubOracleCreate': 37,
-        'StubOracleSet': 38,
-        'TokenAddBank': 39,
-        'TokenDeposit': 40,
-        'TokenDeregister': 41,
-        'TokenLiqBankruptcy': 42,
-        'TokenLiqWithToken': 43,
-        'TokenRegister': 44,
-        'TokenRegisterTrustless': 45,
-        'TokenUpdateIndexAndRate': 46,
-        'TokenWithdraw': 47,
-        'AccountBuybackFeesWithMngo': 48,
-        'TokenForceCloseBorrowsWithToken': 49,
-        'PerpForceClosePosition': 50,
-        'GroupWithdrawInsuranceFund': 51,
-        'TokenConditionalSwapCreate': 52,
-        'TokenConditionalSwapTrigger': 53,
-        'TokenConditionalSwapCancel': 54,
-        'OpenbookV2CancelOrder': 55,
-        'OpenbookV2CloseOpenOrders': 56,
-        'OpenbookV2CreateOpenOrders': 57,
-        'OpenbookV2DeregisterMarket': 58,
-        'OpenbookV2EditMarket': 59,
-        'OpenbookV2LiqForceCancelOrders': 60,
-        'OpenbookV2PlaceOrder': 61,
-        'OpenbookV2PlaceTakeOrder': 62,
-        'OpenbookV2RegisterMarket': 63,
-        'OpenbookV2SettleFunds': 64,
-        'AdminTokenWithdrawFees': 65,
-        'AdminPerpWithdrawFees': 66,
-        'AccountSizeMigration': 67,
-        'TokenConditionalSwapStart': 68,
-        'TokenConditionalSwapCreatePremiumAuction': 69,
-        'TokenConditionalSwapCreateLinearAuction': 70,
-        'Serum3PlaceOrderV2': 71,
-        'TokenForceWithdraw': 72,
-        'SequenceCheck': 73,
-        'HealthCheck': 74,
-        'GroupChangeInsuranceFund': 75,
+        'PerpEditMarket': 19,
+        'PerpLiqBaseOrPositivePnl': 20,
+        'PerpLiqForceCancelOrders': 21,
+        'PerpLiqNegativePnlOrBankruptcy': 22,
+        'PerpPlaceOrder': 23,
+        'PerpSettleFees': 24,
+        'PerpSettlePnl': 25,
+        'PerpUpdateFunding': 26,
+        'Serum3CancelAllOrders': 27,
+        'Serum3CancelOrder': 28,
+        'Serum3CloseOpenOrders': 29,
+        'Serum3CreateOpenOrders': 30,
+        'Serum3DeregisterMarket': 31,
+        'Serum3EditMarket': 32,
+        'Serum3LiqForceCancelOrders': 33,
+        'Serum3PlaceOrder': 34,
+        'Serum3RegisterMarket': 35,
+        'Serum3SettleFunds': 36,
+        'StubOracleClose': 37,
+        'StubOracleCreate': 38,
+        'StubOracleSet': 39,
+        'TokenAddBank': 40,
+        'TokenDeposit': 41,
+        'TokenDeregister': 42,
+        'TokenLiqBankruptcy': 43,
+        'TokenLiqWithToken': 44,
+        'TokenRegister': 45,
+        'TokenRegisterTrustless': 46,
+        'TokenUpdateIndexAndRate': 47,
+        'TokenWithdraw': 48,
+        'AccountBuybackFeesWithMngo': 49,
+        'TokenForceCloseBorrowsWithToken': 50,
+        'PerpForceClosePosition': 51,
+        'GroupWithdrawInsuranceFund': 52,
+        'TokenConditionalSwapCreate': 53,
+        'TokenConditionalSwapTrigger': 54,
+        'TokenConditionalSwapCancel': 55,
+        'OpenbookV2CancelOrder': 56,
+        'OpenbookV2CloseOpenOrders': 57,
+        'OpenbookV2CreateOpenOrders': 58,
+        'OpenbookV2DeregisterMarket': 59,
+        'OpenbookV2EditMarket': 60,
+        'OpenbookV2LiqForceCancelOrders': 61,
+        'OpenbookV2PlaceOrder': 62,
+        'OpenbookV2PlaceTakeOrder': 63,
+        'OpenbookV2RegisterMarket': 64,
+        'OpenbookV2SettleFunds': 65,
+        'AdminTokenWithdrawFees': 66,
+        'AdminPerpWithdrawFees': 67,
+        'AccountSizeMigration': 68,
+        'TokenConditionalSwapStart': 69,
+        'TokenConditionalSwapCreatePremiumAuction': 70,
+        'TokenConditionalSwapCreateLinearAuction': 71,
+        'Serum3PlaceOrderV2': 72,
+        'TokenForceWithdraw': 73,
+        'SequenceCheck': 74,
+        'HealthCheck': 75,
+        'GroupChangeInsuranceFund': 76,
     }
 
     for attr, bit_position in ix_map.items():
-        attr_value = getattr(params, attr)
+        attr_value = getattr(params, attr, True)  # Default auf True, wenn nicht gesetzt
         if not attr_value:
             ix_gate |= (1 << bit_position)
 
