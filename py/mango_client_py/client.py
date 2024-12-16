@@ -28,6 +28,17 @@ from .utils import (
     to_native_sell_per_buy_token_price,
     uniq,
 )
+from .param_builder import (
+    TokenRegisterParams,
+    TokenEditParams,
+    PerpEditParams,
+    IxGateParams,
+    DefaultTokenRegisterParams,
+    NullTokenEditParams,
+    NullPerpEditParams,
+    TrueIxGateParams,
+    build_ix_gate
+)
 from .accounts.mango_account import MangoAccounts
 from .accounts.oracles import Oracles
 from .accounts.serum3 import Serum3
@@ -104,6 +115,64 @@ class MangoClient:
     def wallet_pk(self) -> PublicKey:
         return self.program.provider.wallet.public_key
 
+        async def register_token(self, params: TokenRegisterParams) -> MangoSignatureStatus:
+        """
+        Beispielhafte Methode zum Registrieren eines Tokens mit den gegebenen Parametern.
+        """
+        # Erstellen Sie die Transaktionsanweisung basierend auf den Params
+        ix = await self.program.methods.token_register(
+            # Passen Sie die Parameter entsprechend Ihrer Programmierschnittstelle an
+            oracle_config=params.oracle_config,
+            group_insurance_fund=params.group_insurance_fund,
+            interest_rate_params=params.interest_rate_params,
+            loan_fee_rate=params.loan_fee_rate,
+            loan_origination_fee_rate=params.loan_origination_fee_rate,
+            maint_asset_weight=params.maint_asset_weight,
+            init_asset_weight=params.init_asset_weight,
+            maint_liab_weight=params.maint_liab_weight,
+            init_liab_weight=params.init_liab_weight,
+            liquidation_fee=params.liquidation_fee,
+            stable_price_delay_interval_seconds=params.stable_price_delay_interval_seconds,
+            stable_price_delay_growth_limit=params.stable_price_delay_growth_limit,
+            stable_price_growth_limit=params.stable_price_growth_limit,
+            min_vault_to_deposits_ratio=params.min_vault_to_deposits_ratio,
+            net_borrow_limit_per_window_quote=params.net_borrow_limit_per_window_quote,
+            net_borrow_limit_window_size_ts=params.net_borrow_limit_window_size_ts,
+            borrow_weight_scale_start_quote=params.borrow_weight_scale_start_quote,
+            deposit_weight_scale_start_quote=params.deposit_weight_scale_start_quote,
+            reduce_only=params.reduce_only,
+            token_conditional_swap_taker_fee_rate=params.token_conditional_swap_taker_fee_rate,
+            token_conditional_swap_maker_fee_rate=params.token_conditional_swap_maker_fee_rate,
+            flash_loan_swap_fee_rate=params.flash_loan_swap_fee_rate,
+            interest_curve_scaling=params.interest_curve_scaling,
+            interest_target_utilization=params.interest_target_utilization,
+            deposit_limit=params.deposit_limit,
+            zero_util_rate=params.zero_util_rate,
+            platform_liquidation_fee=params.platform_liquidation_fee,
+            disable_asset_liquidation=params.disable_asset_liquidation,
+            collateral_fee_per_day=params.collateral_fee_per_day,
+            tier=params.tier,
+        ).accounts({
+            'group': self.group.public_key,
+            'payer': self.wallet_pk,
+            # Weitere Accounts hinzufügen, die für die Methode erforderlich sind
+        }).instruction()
+        
+        # Erstellen der IxGate Bitmask
+        ix_gate_params = IxGateParams(
+            TokenRegister=True,  # Beispiel: Aktivieren Sie die TokenRegister Instruktion
+            # Setzen Sie andere Instruktionen je nach Bedarf
+        )
+        ix_gate = build_ix_gate(ix_gate_params)
+        
+        # Fügen Sie die IxGate Instruktion hinzu
+        # Beispiel: Sie müssen eine entsprechende Methode in Ihrem Program haben, um IxGate zu setzen
+        # ix_gate_ix = ... (Erstellen Sie die Instruktion basierend auf Ihrem Programm)
+        
+        # Senden der Transaktion
+        status = await self.send_and_confirm_transaction([ix, ix_gate_ix])
+        return status
+        
     async def send_and_confirm_transaction(
         self,
         ixs: List[TransactionInstruction],
