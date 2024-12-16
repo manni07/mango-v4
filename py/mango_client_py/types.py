@@ -4,8 +4,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Dict, Optional
 from solana.publickey import PublicKey
-from solana.rpc.commitment import Commitment
-from solana.rpc.types import TxOpts
 
 # ----------------------------
 # Enums
@@ -110,7 +108,7 @@ class Group:
     serum3_external_markets_map: Dict[Any, Any] = field(default_factory=dict)  # Passen Sie den Typ an, falls bekannt
     buyback_fees_swap_mango_account: PublicKey = field(default_factory=lambda: PublicKey(""))
 
-    def get_perp_market_by_market_index(self, market_index: int) -> PerpMarket:
+    def get_perp_market_by_market_index(self, market_index: int) -> Optional[PerpMarket]:
         """
         Gibt den PerpMarket basierend auf dem Marktindex zurück.
         """
